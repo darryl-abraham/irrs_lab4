@@ -40,7 +40,7 @@ if __name__ == '__main__':
     numwords = args.numwords
 
     try:
-        client = Elasticsearch(timeout=1000)
+        client = Elasticsearch(hosts=['http://localhost:9200'], request_timeout=1000)
         voc = {}  # global vocabulary frequency
         docterms = {}  # document vocabulary
         print('Querying all documents ...')
@@ -49,7 +49,7 @@ if __name__ == '__main__':
         for s in sc:
             docpath = s['_source']['path']
             docterms[docpath] = set()  # use a set for efficient operations
-            tv = client.termvectors(index=index, doc_type='document', id=s['_id'], fields=['text'])
+            tv = client.termvectors(index=index, id=s['_id'], fields=['text'])
             if 'text' in tv['term_vectors']:
                 for t in tv['term_vectors']['text']['terms']:
                     docterms[docpath].add(t)

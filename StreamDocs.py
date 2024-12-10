@@ -16,6 +16,7 @@ StreamDocs
 :Date:  14/07/2017
 """
 
+import sys
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
 from elasticsearch.exceptions import NotFoundError
@@ -32,10 +33,12 @@ if __name__ == '__main__':
 
     index = args.index
     try:
-        client = Elasticsearch()
+        client = Elasticsearch(hosts=["http://localhost:9200"], request_timeout=1000)
         sc = scan(client, index=index, query={"query": {"match_all": {}}})
         for r in sc:
             print(r['_source']['path'], '\t', r['_source']['text'].encode('ascii','replace'))
+    except BrokenPipeError:
+        sys.exit(0)
     except NotFoundError:
         raise(NameError(f'Index {index} does not exists'))
 

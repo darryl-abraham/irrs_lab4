@@ -35,6 +35,7 @@ if __name__ == '__main__':
     for line in f:
         doc, words = line.split(':')
         ldocs.append(words)
+        print(doc, words)
 
    # Generate nclust prototypes with nclust random documents
     doc = choice(range(len(ldocs)), args.nclust)

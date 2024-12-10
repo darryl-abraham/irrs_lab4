@@ -16,6 +16,8 @@ MRKmeansStep
 
 """
 
+from collections import Counter
+from itertools import chain
 from mrjob.job import MRJob
 from mrjob.step import MRStep
 
@@ -27,51 +29,46 @@ class MRKmeansStep(MRJob):
 
     def jaccard(self, prot, doc):
         '''
-        Returns the Jaccard similarity between a prototype and a document.
+        Compute here the Jaccard similarity between  a prototype and a document.
+        prot should be a list of pairs (word, probability).
+        doc should be a list of words.
+        Words must be alphabeticaly ordered.
+        The result should be always a value in the range [0,1].
 
                 Parameters:
                         self (): ...
-                        prot (str): list of pairs (word, probability)
-                        doc (str): list of words contained in the doc
-
+                        prot (list): list of pairs [(word, probability)]
+                        doc (list): list of words
+                
                 Returns:
-                        jaccard similarity (float): should be always a value in the range [0,1]
+                        jaccard_similarity (float): value in the range [0,1]
         '''
-        prot_set = set([tupl[0] for tupl in set(prot)])
 
-        intersection = len(list(prot_set.intersection(doc)))
-        union = (len(prot_set) + len(set(doc))) - intersection
+        prot = dict(prot)
 
-        return float(intersection) / union
+        ordered_doc = sorted(doc)
 
+        # Compute dot product
+        dot_product = sum(
+            prot.get(word, 0) * 1
+            for word in ordered_doc
+        )
 
-    def in_prototype(self, key, word):
-        '''
-        Attempting to define a function that checks if a word (word) is included in the previous prototype for
-        each cluster (key) before appending word to new prototype in the Reducer Step of MRJob.
+        # Compute norms
+        prototype_norm_sq = sum(value ** 2 for value in prot.values())
+        document_norm_sq = len(doc)
 
-                Parameters:
-                        self (): ...
-                        key (str): clusterId of the prototype
-                        word (str): word we want to know whether is included in previous prototype
+        # Compute Jaccard similarity
+        jaccard_similarity = dot_product / (prototype_norm_sq + document_norm_sq - dot_product)
 
-                Returns:
-                        in_prototype (bool): whether or not the word is contained in previous prototype
-
-        '''
-        for clusterId, prototype in self.prototypes.items():
-            if clusterId != key:
-                continue
-            if word in [tupl[0] for tupl in set(prototype)]:
-                return True
-        return False
+        return jaccard_similarity
 
 
     def configure_args(self):
         """
         Additional configuration flag to get the prototypes files
 
-        :return:
+        :return: None
         """
         super(MRKmeansStep, self).configure_args()
         self.add_file_arg('--prot')
@@ -81,7 +78,7 @@ class MRKmeansStep(MRJob):
         """
         Loads the current cluster prototypes
 
-        :return:
+        :return: None
         """
         f = open(self.options.prot, 'r')
         for line in f:
@@ -94,19 +91,21 @@ class MRKmeansStep(MRJob):
 
     def assign_prototype(self, _, line):
         '''
-        This is the mapper. It computes the closest prototype to a document using Jaccard
-        similarity and returns a list of pairs (prototype_id, document words)
+        This is the mapper it should compute the closest prototype to a document.
+        Words should be sorted alphabetically in the prototypes and the documents.
+        This function has to return at list of pairs (prototype_id, document words).
+        You can add also more elements to the value element, for example the document_id.
 
                 Parameters:
                         self (): ...
                         _ (): ...
-                        line (str): in the form "docid:wor1 word2 ... wordn"
-
+                        line (str): line from input file containing docId and list of words
+                
                 Returns:
                         a pair (assigned_cluster, (doc, lwords)) where:
-                                - assigned_cluster = clusterId
-                                - doc = docId of docs assigned to clusterId
-                                - lwords = list of words contained in doc
+                                - assigned_cluster = clusterId assigned to the document
+                                - doc = docId
+                                - lwords = list of words in the document
         '''
         # extact data by splitting line 
         doc, words = line.split(':')
@@ -115,25 +114,29 @@ class MRKmeansStep(MRJob):
         # initializing comparison and assignment parameters
         max_score = float('-inf') 
         assigned_cluster = None
-        # iterate through each doc and assign it's most similar cluseter
-        for clusterId, prototype in self.prototypes.items():
-            jaccard_score = self.jaccard(prototype, lwords)
-            if (jaccard_score > max_score):
-                max_score = jaccard_score
-                assigned_cluster = clusterId # update the cluster assigned to the document
+
+        # iterate through each prot and assign to most similar one
+        for cluster, prototype in self.prototypes.items():
+            score = self.jaccard(prototype, lwords)
+            if score > max_score:
+                max_score = score
+                assigned_cluster = cluster
 
         yield (assigned_cluster, (doc, lwords))
 
 
     def aggregate_prototype(self, key, values):
         '''
-        Returns new re-calculated prototypes for each clusterId in the form of 
-        a pair (clusterId, new_prototype), where new_prototype is a list
+        Input is cluster and all the documents it has assigned.
+        Outputs should be at least a pair (cluster, new prototype).
+        It should receive a list with all the words of the documents assigned for a cluster.
+        The value for each word has to be the frequency of the word divided by the number of documents assigned to the cluster.
+        Words are ordered alphabetically but you will have to use an efficient structure to compute the frequency of each word.
 
                 Parameters:
                         self (): ...
                         key (str): assigned clusterId of doc by mapper
-                        values (tuple): where value[0] = docId, and value[1] = list of words contained in doc
+                        values (list): list of tuples (docId, words) assigned to clusterId
 
                 Returns:
                         a pair (key, (assigned_docs, new_prototype)) where:
@@ -142,28 +145,22 @@ class MRKmeansStep(MRJob):
                                 - new_prototype = list of top words by sorted by descending frequency/n_docs
         '''
 
-        assigned_docs = [] # list to save documents assigned to a prototype
-        word_freq = {} # dict to save words and their frequencies
-        # iterate through input and count word frequencies
-        for (doc, lwords) in values:
-            assigned_docs.append(doc)
-            for word in lwords:
-                if word in word_freq: # if word exists in dict
-                    word_freq[word] += 1
-                else: # if word does not exist in dict
-                    word_freq[word] = 1
+        # Step 1: Initialize variables
+        assigned_docs = []
+        word_count = Counter()
+        doc_count = 0
 
-        # calculate the mean by :frequency of word divided by total number of documents
-        doc_words = []
-        n_docs = len(assigned_docs) # number of total documents
+        # Step 2: Consume the generator
+        for doc_id, words in values:
+            assigned_docs.append(doc_id)
+            word_count.update(words)
+            doc_count += 1
 
-        # creating new list of words and their frequencies for new prototypes
-        for word, frequency in word_freq.items():
-            doc_words.append((word, frequency / int(n_docs)))
+        # Step 3: Calculate frequency normalized by number of documents
+        word_frequencies = {word: count / doc_count for word, count in word_count.items()}
 
-        # sorting all output descending by frequency --> top [:69]
-        assigned_docs = sorted(assigned_docs) 
-        new_prototype = sorted(doc_words, key=lambda x: x[1], reverse=True)[:69]
+        # Step 4: Sort words by descending frequency, then alphabetically
+        new_prototype = sorted(word_frequencies.items(), key=lambda x: (-x[1], x[0]))
 
         yield (key, (assigned_docs, new_prototype))
 
@@ -171,7 +168,7 @@ class MRKmeansStep(MRJob):
     def steps(self):
         return [MRStep(mapper_init=self.load_data, mapper=self.assign_prototype,
                        reducer=self.aggregate_prototype)
-            ]
+                ]
 
 
 if __name__ == '__main__':

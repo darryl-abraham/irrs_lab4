@@ -82,6 +82,12 @@ if __name__ == '__main__':
 
         # printing time elapsed during each iteration
         print('Time: {} seconds'.format(time.time() - tinit))
+        seconds = time.time() - tinit
+        # create file to record time taken for each iteration in single file
+        with open(cwd + '/results/time.txt', 'a') as f:
+            f.write('{}, {}\n'.format(i+1, seconds))
+            f.flush()
+            f.close()
 
         if nomove:  # If there is no changes in two consecutive iteration we can stop
             print("Algorithm converged")
